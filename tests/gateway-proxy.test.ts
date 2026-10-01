@@ -1,0 +1,139 @@
+import { describe, expect, it, vi } from "vitest";
+import { createGatewayProxy } from "../src/gateway-proxy.js";
+import type { SlackGateway } from "../src/types.js";
+import { FakeGateway } from "./helpers.js";
+
+function makeLogger() {
+  return { warn: vi.fn() };
+}
+
+describe("createGatewayProxy", () => {
+  it("delegates every call to the live gateway when one exists", async () => {
+    const real = new FakeGateway();
+    const logger = makeLogger();
+    const proxy = createGatewayProxy(() => real, logger);
+
+    await proxy.start();
+    expect(real.started).toBe(true);
+    expect(proxy.isConnected()).toBe(true);
+    expect(proxy.botUserId()).toBe("UBOT");
+
+    const posted = await proxy.postMessage({ channel: "C1", text: "hi" });
+    expect(real.posts).toHaveLength(1);
+    expect(posted.channel).toBe("C1");
+
+    await proxy.updateMessage({ channel: "C1", ts: posted.ts, text: "edited" });
+    expect(real.updates).toHaveLength(1);
+
+    await proxy.postEphemeral({ channel: "C1", user: "U1", text: "eph" });
+    expect(real.ephemerals).toHaveLength(1);
+
+    const dm = await proxy.openDm("U1");
+    expect(dm).toBe("D-U1");
+    expect(real.dmOpens).toEqual(["U1"]);
+
+    const name = await proxy.getUserDisplayName("U1");
+    expect(name).toBe("name-U1");
+
+    const messageHandler = vi.fn(async () => {});
+    proxy.onMessage(messageHandler);
+    await real.emitMessage({ channel: "C1", channelType: "channel", user: "U1", text: "hi", ts: "1.1" });
+    expect(messageHandler).toHaveBeenCalledTimes(1);
+
+    await proxy.stop();
+    expect(real.started).toBe(false);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("no-ops and logs a warning for void/boolean-returning methods when there is no live gateway", async () => {
+    const logger = makeLogger();
+    const proxy = createGatewayProxy(() => null, logger);
+
+    await expect(proxy.start()).resolves.toBeUndefined();
+    await expect(proxy.stop()).resolves.toBeUndefined();
+    expect(proxy.isConnected()).toBe(false);
+    expect(proxy.botUserId()).toBeUndefined();
+    await expect(proxy.updateMessage({ channel: "C1", ts: "1", text: "x" })).resolves.toBeUndefined();
+    await expect(proxy.postEphemeral({ channel: "C1", user: "U1", text: "x" })).resolves.toBeUndefined();
+
+    const name = await proxy.getUserDisplayName("U1");
+    expect(name).toBe("U1"); // falls back to the id, matching BoltGateway's own fallback
+
+    proxy.onMessage(vi.fn());
+    proxy.onMention(vi.fn());
+    proxy.onReaction(vi.fn());
+    proxy.onAction(/x/, vi.fn());
+    proxy.onCommand("/x", vi.fn());
+
+    expect(logger.warn).toHaveBeenCalled();
+    expect(logger.warn.mock.calls.length).toBeGreaterThanOrEqual(9);
+  });
+
+  it("throws a clear error from postMessage when there is no live gateway, since callers use its return value", async () => {
+    const logger = makeLogger();
+    const proxy = createGatewayProxy(() => null, logger);
+    await expect(proxy.postMessage({ channel: "C1", text: "hi" })).rejects.toThrow(/not configured/i);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("postMessage"), expect.anything());
+  });
+
+  it("reflects gateway swaps made through getGateway between calls", async () => {
+    let current: SlackGateway | null = null;
+    const proxy = createGatewayProxy(() => current, makeLogger());
+    expect(proxy.isConnected()).toBe(false);
+
+    const gw = new FakeGateway();
+    await gw.start();
+    current = gw;
+    expect(proxy.isConnected()).toBe(true);
+    expect(proxy.botUserId()).toBe("UBOT");
+
+    current = null;
+    expect(proxy.isConnected()).toBe(false);
+  });
+
+  it("delegates probe() to the live gateway", async () => {
+    const real = new FakeGateway();
+    const logger = makeLogger();
+    const proxy = createGatewayProxy(() => real, logger);
+
+    await expect(proxy.probe()).resolves.toBe(true);
+    real.probeResult = false;
+    await expect(proxy.probe()).resolves.toBe(false);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("delegates fetchThreadReplies to the live gateway, passing channel, thread ts and limit through", async () => {
+    const real = new FakeGateway();
+    const logger = makeLogger();
+    const proxy = createGatewayProxy(() => real, logger);
+    real.threadReplies = [{ user: "U1", text: "the alert", ts: "1.1", isBot: true }];
+
+    await expect(proxy.fetchThreadReplies("C1", "1.1", 50)).resolves.toEqual([
+      { user: "U1", text: "the alert", ts: "1.1", isBot: true },
+    ]);
+    expect(real.threadFetches).toEqual([{ channel: "C1", threadTs: "1.1", limit: 50 }]);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("fetchThreadReplies returns an empty transcript, never throws, when there is no live gateway", async () => {
+    // Seeding is best-effort: chat routing proceeds with no history rather
+    // than failing the turn, so an unconfigured proxy must answer with a
+    // transcript shape instead of an exception.
+    const logger = makeLogger();
+    const proxy = createGatewayProxy(() => null, logger);
+    await expect(proxy.fetchThreadReplies("C1", "1.1", 50)).resolves.toEqual([]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("fetchThreadReplies"), expect.anything(),
+    );
+  });
+
+  it("probe() reports false — never true — when there is no live gateway", async () => {
+    // Fail-closed: the worker's watchdog treats a false probe as "recover",
+    // so an unconfigured proxy answering `true` would suppress recovery
+    // forever.
+    const logger = makeLogger();
+    const proxy = createGatewayProxy(() => null, logger);
+    await expect(proxy.probe()).resolves.toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("probe"), expect.anything());
+  });
+});

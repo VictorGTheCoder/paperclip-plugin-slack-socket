@@ -1,0 +1,269 @@
+import { describe, expect, it } from "vitest";
+import { createApprovals } from "../src/approvals.js";
+import { ACTION_IDS, STATE_KEYS } from "../src/constants.js";
+import { FakeGateway, makeCtx, TEST_CONFIG } from "./helpers.js";
+
+function setup(configOverrides = {}) {
+  const bundle = makeCtx(configOverrides);
+  const gateway = new FakeGateway();
+  const approvals = createApprovals({
+    ctx: bundle.ctx,
+    gateway,
+    getConfig: async () => ({ ...TEST_CONFIG, ...configOverrides }),
+    companyId: TEST_CONFIG.companyId,
+  });
+  return { ...bundle, gateway, approvals };
+}
+
+const approveAction = {
+  actionId: ACTION_IDS.approvalApprove,
+  value: "app-1",
+  user: "U9",
+  userName: "sam",
+  channel: "C-APPR",
+  messageTs: "77.1",
+};
+
+describe("approvals", () => {
+  it("subscribes to approval.created filtered to the configured companyId", async () => {
+    const { ctx } = setup();
+    expect(ctx.events.on).toHaveBeenCalledWith(
+      "approval.created",
+      { companyId: TEST_CONFIG.companyId },
+      expect.any(Function),
+    );
+  });
+
+  it("posts approval.created with buttons to the approvals channel", async () => {
+    const { ctx, gateway, emitEvent } = setup({ approvalsChannelId: "C-APPR" });
+    await emitEvent("approval.created", { entityId: "app-1", payload: { title: "Deploy?" } });
+    expect(gateway.posts[0]!.channel).toBe("C-APPR");
+    expect(JSON.stringify(gateway.posts[0]!.blocks)).toContain(ACTION_IDS.approvalApprove);
+    expect(ctx.metrics.write).toHaveBeenCalledWith("slack.notifications.sent", 1, { type: "approval_created" });
+  });
+
+  it("writes a failed metric when the approval.created post throws", async () => {
+    const { ctx, gateway, emitEvent } = setup({ approvalsChannelId: "C-APPR" });
+    gateway.postMessage = async () => {
+      throw new Error("slack down");
+    };
+    await emitEvent("approval.created", { entityId: "app-1", payload: { title: "Deploy?" } });
+    expect(ctx.metrics.write).toHaveBeenCalledWith("slack.notifications.failed", 1, { type: "approval_created" });
+  });
+
+  it("decides the approval via REST and updates the message on approve", async () => {
+    const { ctx, gateway, approvals } = setup();
+    await approvals.handleAction(approveAction);
+    expect(ctx.http.fetch).toHaveBeenCalledWith(
+      "https://pc.example/api/approvals/app-1/approve",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining("slack:U9"),
+      }),
+    );
+    expect(gateway.updates[0]!.ts).toBe("77.1");
+    expect(gateway.updates[0]!.text).toContain("Approved");
+    expect(ctx.activity.log).toHaveBeenCalled();
+  });
+
+  it("does not report a decided approval as failed when only the activity log throws afterward", async () => {
+    // The REST decision succeeded and the message was rewritten — the
+    // approval IS decided. A telemetry failure after that must not post
+    // ':x: Failed to approve … It may already be decided.' under a message
+    // that shows it succeeded, prompting a pointless re-decide/escalation.
+    const { ctx, gateway, approvals } = setup();
+    (ctx.activity.log as any).mockRejectedValue(new Error("activity backend down"));
+    await approvals.handleAction(approveAction);
+    expect(gateway.updates[0]!.text).toContain("Approved");
+    expect(gateway.ephemerals).toHaveLength(0);
+    expect(ctx.logger.warn).toHaveBeenCalled();
+  });
+
+  it("does not report a decided approval as failed when only the metrics write throws afterward", async () => {
+    const { ctx, gateway, approvals } = setup();
+    (ctx.metrics.write as any).mockRejectedValue(new Error("metrics backend down"));
+    await approvals.handleAction(approveAction);
+    expect(gateway.updates[0]!.text).toContain("Approved");
+    expect(gateway.ephemerals).toHaveLength(0);
+  });
+
+  it("sends decisionNote (not decidedByUserId) in the request body — the server ignores decidedByUserId", async () => {
+    const { ctx, approvals } = setup();
+    await approvals.handleAction(approveAction);
+    const call = (ctx.http.fetch as any).mock.calls[0];
+    const body = JSON.parse(call[1].body);
+    expect(body).toEqual({ decisionNote: "Decided via Slack by sam (slack:U9)" });
+  });
+
+  it("omits the Authorization header when paperclipApiKeyRef is not configured (local_trusted mode)", async () => {
+    const { ctx, approvals } = setup();
+    await approvals.handleAction(approveAction);
+    const call = (ctx.http.fetch as any).mock.calls[0];
+    expect(call[1].headers).not.toHaveProperty("Authorization");
+  });
+
+  it("resolves paperclipApiKeyRef and sends it as a Bearer Authorization header when configured", async () => {
+    const { ctx, approvals } = setup({ paperclipApiKeyRef: "board-key-ref" });
+    await approvals.handleAction(approveAction);
+    expect(ctx.secrets.resolve).toHaveBeenCalledWith("board-key-ref", { companyId: "co-1" });
+    const call = (ctx.http.fetch as any).mock.calls[0];
+    expect(call[1].headers).toMatchObject({ Authorization: "Bearer secret-board-key-ref" });
+  });
+
+  it("treats a failure to resolve the board API key like a REST failure: logs, ephemeral, no update, no REST call", async () => {
+    const { ctx, gateway, approvals } = setup({ paperclipApiKeyRef: "board-key-ref" });
+    (ctx.secrets.resolve as any).mockRejectedValueOnce(new Error("secret gone"));
+    await approvals.handleAction(approveAction);
+    expect(ctx.http.fetch).not.toHaveBeenCalled();
+    expect(gateway.updates).toHaveLength(0);
+    expect(gateway.ephemerals).toHaveLength(1);
+    expect(ctx.logger.warn).toHaveBeenCalled();
+  });
+
+  it("logs a warning and posts an ephemeral without calling REST when action.value is empty", async () => {
+    const { ctx, gateway, approvals } = setup();
+    await approvals.handleAction({ ...approveAction, value: "" });
+    expect(ctx.http.fetch).not.toHaveBeenCalled();
+    expect(gateway.ephemerals).toHaveLength(1);
+    expect(ctx.logger.warn).toHaveBeenCalled();
+  });
+
+  it("maps the reject action id to the reject endpoint", async () => {
+    const { ctx, approvals } = setup();
+    await approvals.handleAction({ ...approveAction, actionId: ACTION_IDS.approvalReject });
+    expect(ctx.http.fetch).toHaveBeenCalledWith(
+      "https://pc.example/api/approvals/app-1/reject",
+      expect.anything(),
+    );
+  });
+
+  it("posts an ephemeral failure note when the REST call fails, and retains the message link so a later web-UI decision can still fix the message", async () => {
+    const { ctx, gateway, approvals, stateStore, emitEvent } = setup({ approvalsChannelId: "C-APPR" });
+    await emitEvent("approval.created", { entityId: "app-1", payload: { title: "Deploy?" } });
+    const key = STATE_KEYS.approvalMessage("app-1");
+    // Precondition: the link exists before the failed decision, so the
+    // assertions below aren't vacuously true.
+    expect(stateStore.get(key)).toBeTruthy();
+
+    (ctx.http.fetch as any).mockResolvedValueOnce({ status: 500, json: async () => ({}) });
+    await approvals.handleAction({ ...approveAction, channel: "C-APPR", messageTs: gateway.posts[0]!.ts });
+
+    expect(gateway.updates).toHaveLength(0);
+    expect(gateway.ephemerals[0]!.user).toBe("U9");
+    // The link must survive a failed REST decision: the unlink only happens
+    // after a successful decision (see the ORDER IS LOAD-BEARING comment in
+    // approvals.ts), so a later decision made outside Slack (the web UI)
+    // must still find this link and be able to update the message.
+    expect(stateStore.get(key)).toBeTruthy();
+    expect(stateStore.get(STATE_KEYS.approvalMessageIndex)).toContain(key);
+  });
+
+  it("links the posted approval message to its approval id", async () => {
+    const { stateStore, gateway, emitEvent } = setup({ approvalsChannelId: "C-APPR" });
+    await emitEvent("approval.created", { entityId: "app-1", payload: { title: "Deploy?" } });
+
+    const key = STATE_KEYS.approvalMessage("app-1");
+    expect(stateStore.get(key)).toMatchObject({ channel: "C-APPR", ts: gateway.posts[0]!.ts });
+    expect(stateStore.get(STATE_KEYS.approvalMessageIndex)).toContain(key);
+  });
+
+  it("subscribes to approval.decided filtered to the configured companyId", async () => {
+    const { ctx } = setup();
+    expect(ctx.events.on).toHaveBeenCalledWith(
+      "approval.decided",
+      { companyId: TEST_CONFIG.companyId },
+      expect.any(Function),
+    );
+  });
+
+  it("rewrites the linked message without buttons when the approval is decided outside Slack", async () => {
+    const { stateStore, gateway, emitEvent } = setup({ approvalsChannelId: "C-APPR" });
+    await emitEvent("approval.created", { entityId: "app-1", payload: { title: "Deploy?" } });
+    const postedTs = gateway.posts[0]!.ts;
+
+    await emitEvent("approval.decided", {
+      entityId: "app-1",
+      payload: { status: "approved", decidedByName: "Dana" },
+    });
+
+    expect(gateway.updates).toHaveLength(1);
+    expect(gateway.updates[0]!).toMatchObject({ channel: "C-APPR", ts: postedTs });
+    expect(gateway.updates[0]!.text).toContain("Approved");
+    expect(gateway.updates[0]!.text).toContain("Dana");
+    expect(JSON.stringify(gateway.updates[0]!.blocks)).not.toContain(ACTION_IDS.approvalApprove);
+    expect(JSON.stringify(gateway.updates[0]!.blocks)).not.toContain(ACTION_IDS.approvalReject);
+
+    // Link consumed: nothing will ever legitimately rewrite this message again.
+    expect(stateStore.get(STATE_KEYS.approvalMessage("app-1"))).toBeUndefined();
+    expect(stateStore.get(STATE_KEYS.approvalMessageIndex)).toEqual([]);
+  });
+
+  it("no-ops on approval.decided when no Slack message is linked to that approval", async () => {
+    const { gateway, emitEvent } = setup({ approvalsChannelId: "C-APPR" });
+    await emitEvent("approval.created", { entityId: "app-1", payload: { title: "Deploy?" } });
+
+    await emitEvent("approval.decided", { entityId: "app-2", payload: { status: "approved" } });
+
+    // app-1 is linked but was not the subject of this decision.
+    expect(gateway.updates).toHaveLength(0);
+    expect(gateway.posts).toHaveLength(1);
+  });
+
+  it("strips the buttons and states an unrecognized decision status verbatim", async () => {
+    const { gateway, emitEvent } = setup({ approvalsChannelId: "C-APPR" });
+    await emitEvent("approval.created", { entityId: "app-1", payload: { title: "Deploy?" } });
+
+    await emitEvent("approval.decided", { entityId: "app-1", payload: { status: "revision_requested" } });
+
+    expect(gateway.updates).toHaveLength(1);
+    expect(gateway.updates[0]!.text).toContain("revision_requested");
+    expect(JSON.stringify(gateway.updates[0]!.blocks)).not.toContain(ACTION_IDS.approvalApprove);
+    expect(JSON.stringify(gateway.updates[0]!.blocks)).not.toContain(ACTION_IDS.approvalReject);
+  });
+
+  it("unlinks before writing its own attribution, so the echo can never race it", async () => {
+    const { stateStore, gateway, approvals, emitEvent } = setup({ approvalsChannelId: "C-APPR" });
+    await emitEvent("approval.created", { entityId: "app-1", payload: { title: "Deploy?" } });
+    const key = STATE_KEYS.approvalMessage("app-1");
+
+    let linkedWhenUpdating: unknown = "not-called";
+    const realUpdate = gateway.updateMessage.bind(gateway);
+    gateway.updateMessage = async (msg: { channel: string; ts: string; text: string; blocks?: unknown[] }) => {
+      linkedWhenUpdating = stateStore.get(key);
+      await realUpdate(msg);
+    };
+
+    await approvals.handleAction({ ...approveAction, channel: "C-APPR", messageTs: gateway.posts[0]!.ts });
+
+    // Load-bearing ordering: the link is already gone by the time our own
+    // update runs, so an echoed approval.decided arriving at any point after
+    // the REST call finds nothing to overwrite.
+    expect(linkedWhenUpdating).toBeUndefined();
+  });
+
+  it("does not let the echoed approval.decided overwrite the Slack decider's attribution", async () => {
+    const { stateStore, gateway, approvals, emitEvent } = setup({ approvalsChannelId: "C-APPR" });
+    await emitEvent("approval.created", { entityId: "app-1", payload: { title: "Deploy?" } });
+    const postedTs = gateway.posts[0]!.ts;
+    const key = STATE_KEYS.approvalMessage("app-1");
+    // Precondition: the message IS linked, so the echoed event below has
+    // something it could overwrite. Without this the final assertion would
+    // pass vacuously.
+    expect(stateStore.get(key)).toBeTruthy();
+
+    await approvals.handleAction({ ...approveAction, channel: "C-APPR", messageTs: postedTs });
+    expect(gateway.updates).toHaveLength(1);
+    expect(gateway.updates[0]!.text).toContain("sam");
+    expect(stateStore.get(key)).toBeUndefined();
+
+    // The host echoes our own decision straight back at us.
+    await emitEvent("approval.decided", {
+      entityId: "app-1",
+      payload: { status: "approved", decidedByName: "Paperclip Web" },
+    });
+
+    expect(gateway.updates).toHaveLength(1);
+    expect(gateway.updates.at(-1)!.text).toContain("sam");
+    expect(gateway.updates.at(-1)!.text).not.toContain("Paperclip Web");
+  });
+});

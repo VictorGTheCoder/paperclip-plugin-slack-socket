@@ -1,0 +1,221 @@
+import type { EnvSecretRefBinding } from "@paperclipai/plugin-sdk";
+export type SecretRef = string | EnvSecretRefBinding;
+export type DmSessionMode = "channel" | "thread";
+export interface SlackSocketConfig {
+    slackBotTokenRef: SecretRef;
+    slackAppTokenRef: SecretRef;
+    paperclipApiKeyRef: SecretRef;
+    companyId: string;
+    defaultAgentId: string;
+    defaultChannelId: string;
+    notifyOnIssueCreated: boolean;
+    notifyOnIssueDone: boolean;
+    notifyOnAgentRunFailed: boolean;
+    notifyOnApprovalCreated: boolean;
+    issuesChannelId: string;
+    errorsChannelId: string;
+    approvalsChannelId: string;
+    paperclipBaseUrl: string;
+    sessionIdleHours: number;
+    turnTimeoutMinutes: number;
+    streamPartialReplies: boolean;
+    chatPromptPreamble: string;
+    dmSessionMode: DmSessionMode;
+    /**
+     * Seed a newly created session with the Slack thread it was mentioned in
+     * (see buildSeedBlock in chat.ts). Default true: without it the agent
+     * cannot answer "this issue here above" when the thread root was posted by
+     * a different run through the slack_post_message tool and so was never
+     * seen by this session. Off is the conservative setting — the agent then
+     * only ever reads text addressed to it, at the cost of that question.
+     */
+    seedThreadHistory: boolean;
+    allowedSlackUserIds: string[];
+    agentPostMessageEnabled: boolean;
+    agentPostToChannelsEnabled: boolean;
+    agentPostChannelIds: string[];
+    agentDmEnabled: boolean;
+    agentDmUserIds: string[];
+    agentDmAnyUser: boolean;
+}
+export interface SessionEntry {
+    sessionId: string;
+    channel: string;
+    /**
+     * The thread this session belongs to, or CHANNEL_SESSION_TS when `scope`
+     * is "channel" (a 1:1 DM treated as one continuous conversation). Read
+     * `scope`, not this field, to tell the two apart — that's why `scope`
+     * exists rather than downstream code interpreting a sentinel.
+     */
+    threadTs: string;
+    scope: "channel" | "thread";
+    lastActivityAt: string;
+    /**
+     * True from session creation until the thread-history seed block has
+     * actually been delivered in a prompt (or there was structurally nothing
+     * to seed). Persisted on the session rather than derived from an
+     * ephemeral "was this the creating turn?" flag so that a first turn which
+     * dies after the session is created — a failed placeholder post, a
+     * transient fetch error, a process restart — is retried on a later turn
+     * instead of leaving the thread permanently unseeded. Absent on sessions
+     * created before this field existed, which read as "not pending" (they
+     * are past their first turn and must not suddenly seed).
+     */
+    seedPending?: boolean;
+    /**
+     * Watermark for thread delta hydration: the highest thread ts already
+     * delivered to this session — by the initial seed, by a later delta
+     * block, or as a turn's own triggering message. A later turn fetches
+     * only messages strictly newer than this and prepends them as a
+     * <thread_context> delta, so re-mentions see what happened in between.
+     * Only ever advanced after a prompt actually reached the agent, and only
+     * monotonically (see advanceWatermark in chat.ts): a failed delta fetch
+     * leaves it alone so the gap stays fetchable. Absent on sessions from
+     * before this field existed — the next delivered turn initialises it to
+     * its own trigger ts, deliberately skipping older history the session
+     * lived through.
+     */
+    seededUpTo?: string;
+}
+export interface MessageLink {
+    channel: string;
+    ts: string;
+    createdAt: string;
+}
+/**
+ * @deprecated Renamed to `MessageLink`. Issue threads were the first user of
+ * this shape; approval messages are the second, which is what prompted the
+ * rename. Identical shape — kept exported so existing imports (including
+ * tests/cleanup.test.ts) keep compiling without being touched.
+ */
+export type IssueThreadEntry = MessageLink;
+export type QuestionMode = "reaction" | "answer";
+export interface PendingQuestion {
+    channel: string;
+    ts: string;
+    issueId: string;
+    companyId: string;
+    mode: QuestionMode;
+    question: string;
+    askedAt: string;
+    timeoutMinutes: number;
+}
+export interface InboundMessage {
+    channel: string;
+    channelType: "im" | "channel" | "group";
+    user: string;
+    text: string;
+    ts: string;
+    threadTs?: string;
+}
+export interface InboundReaction {
+    channel: string;
+    messageTs: string;
+    user: string;
+    reaction: string;
+}
+export interface InboundAction {
+    actionId: string;
+    value: string;
+    user: string;
+    userName: string;
+    channel: string;
+    messageTs: string;
+}
+export interface InboundCommand {
+    command: string;
+    text: string;
+    user: string;
+    channel: string;
+}
+export interface OutboundMessage {
+    channel: string;
+    text: string;
+    blocks?: unknown[];
+    threadTs?: string;
+}
+/**
+ * One message read back from a Slack thread. `isBot` is true only for
+ * messages this app itself posted — including an alert another agent run
+ * wrote through the `slack_post_message` tool — identified by the message's
+ * Slack user id matching this gateway's own bot user id, so a transcript
+ * can label it as the bot's own words rather than a third party's claim.
+ *
+ * `isBot` is deliberately NOT set merely because a message carries Slack's
+ * `bot_id` field: any other integration (GitHub, Zapier, a workflow bot, …)
+ * posts with a `bot_id` too, and conflating "posted by some bot" with
+ * "posted by this app" would let a transcript misrepresent a third party's
+ * words as the agent's own. A foreign bot's message keeps its own `user` id
+ * in this shape, so a consumer can resolve and label it like any other
+ * author instead of an anonymous one.
+ */
+export interface ThreadMessage {
+    user: string;
+    text: string;
+    ts: string;
+    isBot: boolean;
+}
+export interface SlackGateway {
+    start(): Promise<void>;
+    stop(): Promise<void>;
+    isConnected(): boolean;
+    botUserId(): string | undefined;
+    /**
+     * Independent liveness signal: an `auth.test` round-trip, false on any
+     * failure. The worker's socket watchdog uses this so recovery never rests
+     * solely on `isConnected()`, which is fed by listeners attached to Bolt's
+     * private receiver internals (see bolt-gateway.ts) with optional chaining
+     * and would silently never flip if Bolt's shape changed. It also catches a
+     * revoked or rotated token on a socket Bolt still believes is open.
+     */
+    probe(): Promise<boolean>;
+    postMessage(msg: OutboundMessage): Promise<{
+        channel: string;
+        ts: string;
+    }>;
+    updateMessage(msg: {
+        channel: string;
+        ts: string;
+        text: string;
+        blocks?: unknown[];
+    }): Promise<void>;
+    postEphemeral(msg: {
+        channel: string;
+        user: string;
+        text: string;
+    }): Promise<void>;
+    openDm(userId: string): Promise<string>;
+    getUserDisplayName(userId: string): Promise<string>;
+    /**
+     * The messages of one thread, oldest first. `conversations.replies`
+     * returns the parent plus only the oldest page of replies, so a single
+     * call would seed a long thread with its opening and miss the recent
+     * discussion — normally the part a person means by "this issue above".
+     * Implementations page on `response_metadata.next_cursor` until Slack
+     * reports no more pages or a hard cap of requests is reached, so a
+     * runaway thread cannot hang a turn; bounding the returned transcript to
+     * something a chat turn can use is the caller's job, not this method's.
+     * `limit` is the page size passed to each underlying request, not a cap
+     * on the total number of messages returned.
+     *
+     * Needs no OAuth scope beyond the `channels:history` / `groups:history` /
+     * `im:history` already granted in slack-app-manifest.json, so this works
+     * in public channels, private channels and 1:1 DMs. A multi-person group
+     * DM (mpim) needs `mpim:history`, which this app does not grant; there
+     * the call rejects with `missing_scope`, and callers should treat that as
+     * "no history available" and proceed rather than fail the turn.
+     */
+    /**
+     * `oldest`, when given, is passed to conversations.replies so Slack only
+     * returns messages at/after that ts — an efficiency hint for delta
+     * fetches, NOT a correctness boundary: callers filter by their own
+     * watermark regardless, because Slack's inclusivity semantics at the
+     * boundary are not relied upon.
+     */
+    fetchThreadReplies(channel: string, threadTs: string, limit: number, oldest?: string): Promise<ThreadMessage[]>;
+    onMessage(handler: (msg: InboundMessage) => Promise<void>): void;
+    onMention(handler: (msg: InboundMessage) => Promise<void>): void;
+    onReaction(handler: (reaction: InboundReaction) => Promise<void>): void;
+    onAction(pattern: RegExp, handler: (action: InboundAction) => Promise<void>): void;
+    onCommand(command: string, handler: (cmd: InboundCommand) => Promise<void>): void;
+}
