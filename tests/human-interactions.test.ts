@@ -26,7 +26,7 @@ const created = {
     kind: "ask_user_questions",
     status: "pending",
     resolverPolicy: "human_only",
-    title: "TFT-215 requires human decision",
+    title: "TFT-215 requires corrective review instruction",
     summary: "PR #305; head abc123. Latest blocker: structural legality.",
     payload: {
       questions: [{
@@ -50,8 +50,10 @@ describe("TFT Paperclip human interactions", () => {
     }
     expect(gateway.posts).toHaveLength(1);
     expect(gateway.posts[0]!.channel).toBe("C-TFT-ESCALATIONS");
-    expect(gateway.posts[0]!.text).toContain("TFT-215 requires human decision");
-    expect(gateway.posts[0]!.text).toContain("Reply in this thread");
+    expect(gateway.posts[0]!.text).toContain("TFT-215 requires corrective review instruction");
+    expect(gateway.posts[0]!.text).toContain("Reply in this Slack thread with a corrective instruction");
+    expect(gateway.posts[0]!.text).toContain("native Request changes");
+    expect(gateway.posts[0]!.text).toContain("not an approval or generic decision");
     expect(stateStore.get(STATE_KEYS.humanInteractionMessage("interaction-1"))).toMatchObject({
       channel: "C-TFT-ESCALATIONS",
       interactionId: "interaction-1",
@@ -186,7 +188,7 @@ describe("TFT Paperclip human interactions", () => {
         otherText: "Make the legality rule structural and rerun review.",
       }],
     });
-    expect(gateway.updates[0]!.text).toContain("Human review instruction recorded");
+    expect(gateway.updates[0]!.text).toContain("Corrective instruction recorded as Request changes");
     expect(ctx.http.fetch).toHaveBeenNthCalledWith(3,
       "https://pc.example/api/issues/issue-1",
       expect.objectContaining({ method: "PATCH" }),

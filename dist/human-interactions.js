@@ -19,12 +19,12 @@ function createdText(event, baseUrl) {
     const issue = event.issue ?? {};
     const interaction = event.interaction ?? {};
     const label = escapeMrkdwn(issue.identifier || issue.title || interaction.issueId || "TFT issue");
-    const title = escapeMrkdwn(interaction.title || `${issue.identifier || "TFT issue"} requires human decision`);
-    const summary = escapeMrkdwn(interaction.summary || "A review decision is required.");
+    const title = escapeMrkdwn(interaction.title || `${issue.identifier || "TFT issue"} requires corrective review instruction`);
+    const summary = escapeMrkdwn(interaction.summary || "A corrective instruction is required for this review.");
     const issueLink = interaction.issueId
         ? `<${baseUrl.replace(/\/+$/, "")}/issues/${encodeURIComponent(interaction.issueId)}|${label}>`
         : `*${label}*`;
-    return `:hand: *${title}*\n${issueLink}\n${summary}\nReply in this thread with the next instruction. The reply will resolve this Paperclip interaction.`;
+    return `:hand: *${title}*\n${issueLink}\n${summary}\nReply in this Slack thread with a corrective instruction. It will be submitted as native Request changes and returned to the saved owner. This free-text route requests changes; it is not an approval or generic decision.`;
 }
 function resolvedText(event) {
     const interaction = event.interaction ?? {};
@@ -68,7 +68,7 @@ export function createHumanInteractions({ ctx, gateway, getConfig, companyId }) 
                 issueIdentifier: typeof issue?.identifier === "string" ? issue.identifier : issueId,
                 questionId: question?.id || ANSWER_QUESTION_ID,
                 optionId: option?.id || ANSWER_OPTION_ID,
-                title: interaction.title || "Human review decision",
+                title: interaction.title || "Corrective review instruction",
                 summary: interaction.summary || "",
             };
             await ctx.state.set(stateScope(key), link);
@@ -275,7 +275,7 @@ export function createHumanInteractions({ ctx, gateway, getConfig, companyId }) 
                         await gateway.updateMessage({
                             channel: link.channel,
                             ts: link.ts,
-                            text: `:white_check_mark: *Human review instruction recorded${continued ? "; native review returned to owner" : "; native review decision still pending"}*\n${escapeMrkdwn(link.issueIdentifier)}\n_${escapeMrkdwn(savedAnswer)}_`,
+                            text: `:white_check_mark: *Corrective instruction recorded as Request changes${continued ? "; issue returned to owner" : "; native review action still pending"}*\n${escapeMrkdwn(link.issueIdentifier)}\n_${escapeMrkdwn(savedAnswer)}_`,
                         });
                         if (continued) {
                             await ctx.state.delete(stateScope(key));

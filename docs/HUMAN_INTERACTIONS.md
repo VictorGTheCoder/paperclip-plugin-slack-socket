@@ -13,13 +13,21 @@ allowlist. The workspace-wide `allowedSlackUserIds` setting does not grant
 permission to make review decisions. The answer is sent to
 `POST /api/issues/{issueId}/interactions/{interactionId}/respond`. The plugin
 then reads the issue and, while the native human review stage is still
-pending, submits its ordinary decision using `PATCH /api/issues/{issueId}`
-with `status: "in_progress"` and the instruction as a comment. Paperclip
-records `changes_requested` and routes to the saved `returnAssignee`; the
-plugin never changes `assigneeAgentId`. This is the native review transition
-and continues to honor the review cap. The interaction uses
-`continuationPolicy: "wake_assignee"`; for a user-assigned stage the normal
-review decision PATCH is still required.
+pending, submits the corrective instruction as Request changes using
+`PATCH /api/issues/{issueId}` with `status: "in_progress"` and the instruction
+as a comment. Every free-text reply on this route means Request changes; it is
+not approval, rejection, or a generic human decision. Paperclip records
+`changes_requested` and routes to the saved `returnAssignee`; the plugin never
+changes `assigneeAgentId`. This is the native review transition and continues
+to honor the review cap. The interaction uses
+`continuationPolicy: "none"`: resolving the question alone does not guarantee
+a native review transition, particularly from the Paperclip UI.
+
+The Paperclip interaction prompt says that an answer there records text only
+and does not submit the native review decision. From Paperclip, use the native
+Request changes action and include the corrective instruction in its decision
+comment. Until that action is taken, the Observer keeps the issue surfaced as
+`waiting / human_review_decision`.
 
 If answering succeeds but the native transition fails, the plugin retains the
 Slack mapping and the recorded answer so a retry attempts only the native
