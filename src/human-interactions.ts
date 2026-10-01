@@ -11,7 +11,7 @@ const ANSWER_QUESTION_ID = "instruction";
 const MAX_ANSWER_LENGTH = 4000;
 
 interface HumanInteractionEvent {
-  action?: "created" | "resolved";
+  action?: "created" | "resolved" | "withdraw_requested";
   issue?: { id?: string; identifier?: string; title?: string };
   interaction?: {
     id?: string;
@@ -42,6 +42,14 @@ export interface HumanInteractionsDeps {
 
 function interactionUrl(baseUrl: string, issueId: string, interactionId: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/api/issues/${encodeURIComponent(issueId)}/interactions/${encodeURIComponent(interactionId)}/respond`;
+}
+
+function issueUrl(baseUrl: string, issueId: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}/api/issues/${encodeURIComponent(issueId)}`;
+}
+
+function withdrawUrl(baseUrl: string, issueId: string, interactionId: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}/api/issues/${encodeURIComponent(issueId)}/interactions/${encodeURIComponent(interactionId)}/withdraw`;
 }
 
 function createdText(event: HumanInteractionEvent, baseUrl: string): string {
@@ -146,10 +154,68 @@ export function createHumanInteractions({ ctx, gateway, getConfig, companyId }: 
     }
   }
 
+  async function handleWithdrawRequested(event: HumanInteractionEvent): Promise<void> {
+    const interaction = event.interaction;
+    const id = typeof interaction?.id === "string" ? interaction.id : "";
+    const issueId = typeof interaction?.issueId === "string" ? interaction.issueId : "";
+    if (!id || !issueId) return;
+    const key = STATE_KEYS.humanInteractionMessage(id);
+    const link = await ctx.state.get(stateScope(key)) as HumanInteractionMessageLink | null;
+    if (link?.withdrawalStatus === "withdrawn" || link?.withdrawalStatus === "failed") {
+      await ctx.events.emit("human-interaction-withdrawn", companyId, {
+        issueId, withdrawalStatus: link.withdrawalStatus,
+        interaction: { id, issueId, status: link.withdrawalStatus === "withdrawn" ? "expired" : "pending" },
+      });
+      return;
+    }
+    const cfg = await getConfig();
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (cfg.paperclipApiKeyRef) {
+      const apiKey = await ctx.secrets.resolve(cfg.paperclipApiKeyRef, { companyId: cfg.companyId });
+      headers.Authorization = `Bearer ${apiKey}`;
+    }
+    let withdrawalStatus: "withdrawn" | "failed" = "withdrawn";
+    let remoteStatus = "expired";
+    try {
+      const response = await ctx.http.fetch(withdrawUrl(cfg.paperclipBaseUrl, issueId, id), {
+        method: "POST", headers, body: JSON.stringify({ reason: "The issue no longer has a pending human review stage." }),
+      });
+      if (response.status < 200 || response.status >= 300) {
+        if (response.status !== 404 && response.status !== 409) throw new Error(`Paperclip interaction withdrawal returned HTTP ${response.status}`);
+        const listResponse = await ctx.http.fetch(`${cfg.paperclipBaseUrl.replace(/\/+$/, "")}/api/issues/${encodeURIComponent(issueId)}/interactions`, { headers });
+        if (listResponse.status < 200 || listResponse.status >= 300) throw new Error(`Paperclip interaction read returned HTTP ${listResponse.status}`);
+        const listPayload = await listResponse.json() as { interactions?: Array<{ id?: string; status?: string }> } | Array<{ id?: string; status?: string }>;
+        const list = Array.isArray(listPayload) ? listPayload : listPayload.interactions || [];
+        const current = list.find((entry) => entry.id === id);
+        if (current?.status === "pending") throw new Error(`Paperclip interaction remains pending after HTTP ${response.status}`);
+        remoteStatus = current?.status || "expired";
+      }
+    } catch (err) {
+      withdrawalStatus = "failed";
+      remoteStatus = "pending";
+      ctx.logger.error("Paperclip human interaction withdrawal failed", { err: errString(err), interactionId: id });
+      await ctx.metrics.write("slack.interactions.failed", 1, { source: "withdrawal" }).catch(() => {});
+    }
+    if (link) {
+      const text = withdrawalStatus === "withdrawn"
+        ? `:white_check_mark: *Human review request withdrawn in Paperclip*\n${escapeMrkdwn(link.issueIdentifier)}`
+        : `:warning: *Paperclip could not withdraw this human review request*\n${escapeMrkdwn(link.issueIdentifier)}. Please resolve it in Paperclip.`;
+      await gateway.updateMessage({ channel: link.channel, ts: link.ts, text }).catch(() => {});
+      const tombstone = { ...link, withdrawalStatus };
+      await ctx.state.set(stateScope(key), tombstone);
+      await updateIndex(ctx, STATE_KEYS.humanInteractionIndex, (current) => current.filter((entry) => entry !== key));
+    }
+    await ctx.events.emit("human-interaction-withdrawn", companyId, {
+      issueId, withdrawalStatus,
+      interaction: { id, issueId, status: remoteStatus },
+    });
+  }
+
   ctx.events.on(OBSERVER_INTERACTION_EVENT, { companyId }, async (rawEvent) => {
     const payload = (rawEvent as { payload?: HumanInteractionEvent }).payload ?? {};
     if (payload.action === "created") await handleCreated(payload);
     else if (payload.action === "resolved") await handleResolved(payload);
+    else if (payload.action === "withdraw_requested") await handleWithdrawRequested(payload);
   });
 
   return {
@@ -162,6 +228,14 @@ export function createHumanInteractions({ ctx, gateway, getConfig, companyId }: 
         if (resolving.has(link.interactionId)) return true;
         resolving.add(link.interactionId);
         try {
+          const cfg = await getConfig();
+          if (!cfg.humanEscalationAllowedSlackUserIds.includes(msg.user)) {
+            await gateway.postEphemeral({
+              channel: msg.channel, user: msg.user,
+              text: "You are not authorized to answer TFT human review escalations. Contact the configured review owner.",
+            });
+            return true;
+          }
           const answer = msg.text.trim().slice(0, MAX_ANSWER_LENGTH);
           if (!answer) {
             await gateway.postEphemeral({
@@ -171,35 +245,68 @@ export function createHumanInteractions({ ctx, gateway, getConfig, companyId }: 
             });
             return true;
           }
-          const cfg = await getConfig();
           const headers: Record<string, string> = { "Content-Type": "application/json" };
           if (cfg.paperclipApiKeyRef) {
             const apiKey = await ctx.secrets.resolve(cfg.paperclipApiKeyRef, { companyId: cfg.companyId });
             headers.Authorization = `Bearer ${apiKey}`;
           }
-          const response = await ctx.http.fetch(interactionUrl(cfg.paperclipBaseUrl, link.issueId, link.interactionId), {
-            method: "POST",
-            headers,
-            body: JSON.stringify({
-              answers: [{
-                questionId: link.questionId,
-                optionIds: [link.optionId],
-                otherText: answer,
-              }],
-            }),
-          });
-          if (response.status < 200 || response.status >= 300) {
-            throw new Error(`Paperclip interaction response returned HTTP ${response.status}`);
+          const savedAnswer = link.answerText || answer;
+          const savedLink = { ...link, answerText: savedAnswer };
+          await ctx.state.set(stateScope(key), savedLink);
+          if (!savedLink.answerRecorded) {
+            let alreadyAnswered = false;
+            if (link.answerText) {
+              const listResponse = await ctx.http.fetch(`${cfg.paperclipBaseUrl.replace(/\/+$/, "")}/api/issues/${encodeURIComponent(link.issueId)}/interactions`, { headers });
+              if (listResponse.status < 200 || listResponse.status >= 300) throw new Error(`Paperclip interaction read returned HTTP ${listResponse.status}`);
+              const listPayload = await listResponse.json() as { interactions?: Array<{ id?: string; status?: string }> } | Array<{ id?: string; status?: string }>;
+              const interactions = Array.isArray(listPayload) ? listPayload : listPayload.interactions || [];
+              alreadyAnswered = interactions.some((entry) => entry.id === link.interactionId && entry.status !== "pending");
+            }
+            if (!alreadyAnswered) {
+              const response = await ctx.http.fetch(interactionUrl(cfg.paperclipBaseUrl, link.issueId, link.interactionId), {
+                method: "POST", headers,
+                body: JSON.stringify({ answers: [{ questionId: link.questionId, optionIds: [link.optionId], otherText: savedAnswer }] }),
+              });
+              if (response.status < 200 || response.status >= 300) {
+                throw new Error(`Paperclip interaction response returned HTTP ${response.status}`);
+              }
+            }
+            savedLink.answerRecorded = true;
+            await ctx.state.set(stateScope(key), savedLink);
+          }
+
+          let continued = savedLink.nativeReviewContinued === true;
+          if (!continued) {
+            const issueResponse = await ctx.http.fetch(issueUrl(cfg.paperclipBaseUrl, link.issueId), { headers });
+            if (issueResponse.status < 200 || issueResponse.status >= 300) throw new Error(`Paperclip issue read returned HTTP ${issueResponse.status}`);
+            const issue = await issueResponse.json() as { status?: string; executionState?: { status?: string; currentStageType?: string; currentParticipant?: { type?: string } } };
+            const stage = issue.executionState;
+            if (issue.status === "in_review" && stage?.status === "pending" && stage.currentStageType === "review" && stage.currentParticipant?.type === "user") {
+              const transition = await ctx.http.fetch(issueUrl(cfg.paperclipBaseUrl, link.issueId), {
+                method: "PATCH", headers,
+                body: JSON.stringify({ status: "in_progress", comment: `Human review instruction: ${savedAnswer}` }),
+              });
+              if (transition.status < 200 || transition.status >= 300) throw new Error(`Paperclip native review continuation returned HTTP ${transition.status}`);
+              continued = true;
+            } else if (issue.status === "in_progress" && issue.executionState?.status === "changes_requested") {
+              continued = true;
+            }
+            if (continued) {
+              savedLink.nativeReviewContinued = true;
+              await ctx.state.set(stateScope(key), savedLink);
+            }
           }
 
           try {
             await gateway.updateMessage({
               channel: link.channel,
               ts: link.ts,
-              text: `:white_check_mark: *Human review instruction recorded*\n${escapeMrkdwn(link.issueIdentifier)}\n_${escapeMrkdwn(answer)}_`,
+              text: `:white_check_mark: *Human review instruction recorded${continued ? "; native review returned to owner" : "; native review decision still pending"}*\n${escapeMrkdwn(link.issueIdentifier)}\n_${escapeMrkdwn(savedAnswer)}_`,
             });
-            await ctx.state.delete(stateScope(key));
-            await updateIndex(ctx, STATE_KEYS.humanInteractionIndex, (current) => current.filter((entry) => entry !== key));
+            if (continued) {
+              await ctx.state.delete(stateScope(key));
+              await updateIndex(ctx, STATE_KEYS.humanInteractionIndex, (current) => current.filter((entry) => entry !== key));
+            }
           } catch (err) {
             ctx.logger.warn("Paperclip interaction was answered but Slack message update failed", {
               err: errString(err),
@@ -212,7 +319,7 @@ export function createHumanInteractions({ ctx, gateway, getConfig, companyId }: 
             await ctx.events.emit("human-interaction-answered", cfg.companyId, {
               issueId: link.issueId,
               interactionId: link.interactionId,
-              answer,
+              answer: savedAnswer,
               responderUserId: msg.user,
             });
           } catch (err) {
@@ -221,7 +328,7 @@ export function createHumanInteractions({ ctx, gateway, getConfig, companyId }: 
               interactionId: link.interactionId,
             });
           }
-          await ctx.metrics.write("slack.interactions.answered", 1, { source: "slack_thread" }).catch(() => {});
+          await ctx.metrics.write("slack.interactions.answered", 1, { source: "slack_thread", nativeReviewContinued: continued ? "true" : "false" }).catch(() => {});
           return true;
         } catch (err) {
           ctx.logger.warn("Failed to answer Paperclip human interaction from Slack", {

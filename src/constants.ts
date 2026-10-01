@@ -175,6 +175,7 @@ export const DEFAULT_CONFIG: SlackSocketConfig = {
   errorsChannelId: "",
   approvalsChannelId: "",
   humanEscalationsChannelId: "",
+  humanEscalationAllowedSlackUserIds: [],
   paperclipApiKeyRef: "",
   paperclipBaseUrl: "http://localhost:3010",
   sessionIdleHours: 24,

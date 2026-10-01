@@ -16,6 +16,7 @@ export interface SlackSocketConfig {
     errorsChannelId: string;
     approvalsChannelId: string;
     humanEscalationsChannelId: string;
+    humanEscalationAllowedSlackUserIds: string[];
     paperclipBaseUrl: string;
     sessionIdleHours: number;
     turnTimeoutMinutes: number;
@@ -91,6 +92,10 @@ export interface HumanInteractionMessageLink extends MessageLink {
     optionId: string;
     title: string;
     summary: string;
+    answerText?: string;
+    answerRecorded?: boolean;
+    nativeReviewContinued?: boolean;
+    withdrawalStatus?: "withdrawn" | "failed";
 }
 /**
  * @deprecated Renamed to `MessageLink`. Issue threads were the first user of

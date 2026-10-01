@@ -128,6 +128,13 @@ const manifest: PaperclipPluginManifestV1 = {
         description: "Channel for TFT human review interactions (falls back to the default channel).",
         default: DEFAULT_CONFIG.humanEscalationsChannelId,
       },
+      humanEscalationAllowedSlackUserIds: {
+        type: "array",
+        items: { type: "string" },
+        title: "Allowed Slack users for human escalations",
+        description: "Fail-closed allowlist for replying to TFT human review escalations. Empty means no Slack user may resolve these decisions; this is separate from the workspace-wide bot allowlist.",
+        default: DEFAULT_CONFIG.humanEscalationAllowedSlackUserIds,
+      },
       paperclipBaseUrl: {
         type: "string",
         title: "Paperclip Base URL",
