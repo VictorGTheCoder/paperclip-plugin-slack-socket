@@ -10,6 +10,7 @@ import { mergeConfig } from "./config.js";
 import { DEFAULT_CONFIG, JOB_KEYS, SLASH_COMMAND } from "./constants.js";
 import { createEventDeduper } from "./event-dedup.js";
 import { createGatewayProxy } from "./gateway-proxy.js";
+import { createHumanInteractions } from "./human-interactions.js";
 import { registerNotifications } from "./notifications.js";
 import { createPostMessage } from "./post-message.js";
 import { errString } from "./redact.js";
@@ -41,6 +42,7 @@ let currentGateway = null;
 let lastCtx = null;
 let coreModules = null;
 let approvals = null;
+let humanInteractions = null;
 // Slack Socket Mode redelivers events at-least-once, and a reconnect can
 // replay a backlog of stale events. Dedupe/stale-filter mention and
 // message dispatch before it reaches ask-human's answer routing or chat —
@@ -434,10 +436,11 @@ function ensureCompanyModules(ctx, companyId) {
         eventsSubscribed = true;
         registerNotifications({ ctx, gateway: gatewayProxy, getConfig, companyId });
         approvals = createApprovals({ ctx, gateway: gatewayProxy, getConfig, companyId });
+        humanInteractions = createHumanInteractions({ ctx, gateway: gatewayProxy, getConfig, companyId });
     }
     // Set on the same first-bind path that flips `eventsSubscribed`, so it is
     // always non-null here.
-    return approvals;
+    return { approvals: approvals, humanInteractions: humanInteractions };
 }
 /**
  * Apply a fully-merged config: validate the required fields, resolve the
@@ -562,7 +565,9 @@ export async function applyConfig(ctx, cfg, makeGateway) {
     // modules (subscribing ctx.events on the first successful bind only),
     // tear down the previous gateway, and commit the new config.
     const { chat, askHuman, commands } = ensureCoreModules(ctx);
-    const approvals = ensureCompanyModules(ctx, cfg.companyId);
+    const companyModules = ensureCompanyModules(ctx, cfg.companyId);
+    const approvals = companyModules.approvals;
+    const humanInteractions = companyModules.humanInteractions;
     if (currentGateway) {
         await currentGateway.stop().catch(() => { });
         currentGateway = null;
@@ -591,6 +596,8 @@ export async function applyConfig(ctx, cfg, makeGateway) {
             await ctx.metrics.write("slack.events.duplicate", 1, { kind: "message" }).catch(() => { });
             return;
         }
+        if (await humanInteractions.tryHandleReply(msg))
+            return;
         if (await askHuman.tryHandleAnswer(msg))
             return;
         await chat.handleMessage(msg);

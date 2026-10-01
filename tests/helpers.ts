@@ -62,6 +62,7 @@ export function makeCtx(configOverrides: Partial<SlackSocketConfig> = {}): MockC
           eventHandlers.set(name, list);
         },
       ),
+      emit: vi.fn().mockResolvedValue(undefined),
     },
     agents: {
       sessions: {

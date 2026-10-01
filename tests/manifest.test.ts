@@ -13,7 +13,7 @@ describe("manifest", () => {
       [
         "issues.create", "issues.read", "issue.comments.create", "issues.wakeup",
         "agent.sessions.create", "agent.sessions.send", "agent.sessions.close",
-        "agent.tools.register", "http.outbound", "events.subscribe",
+        "agent.tools.register", "http.outbound", "events.subscribe", "events.emit",
         "plugin.state.read", "plugin.state.write", "secrets.read-ref", "instance.settings.register",
         "activity.log.write", "metrics.write", "jobs.schedule",
       ].sort(),

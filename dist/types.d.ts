@@ -15,6 +15,7 @@ export interface SlackSocketConfig {
     issuesChannelId: string;
     errorsChannelId: string;
     approvalsChannelId: string;
+    humanEscalationsChannelId: string;
     paperclipBaseUrl: string;
     sessionIdleHours: number;
     turnTimeoutMinutes: number;
@@ -81,6 +82,15 @@ export interface MessageLink {
     channel: string;
     ts: string;
     createdAt: string;
+}
+export interface HumanInteractionMessageLink extends MessageLink {
+    interactionId: string;
+    issueId: string;
+    issueIdentifier: string;
+    questionId: string;
+    optionId: string;
+    title: string;
+    summary: string;
 }
 /**
  * @deprecated Renamed to `MessageLink`. Issue threads were the first user of

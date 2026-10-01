@@ -1,7 +1,7 @@
 import type { PluginToolDeclaration, ScopeKey } from "@paperclipai/plugin-sdk";
 import type { SlackSocketConfig } from "./types.js";
 export declare const PLUGIN_ID = "cvh.slack-socket";
-export declare const PLUGIN_VERSION = "0.11.4-tft.3";
+export declare const PLUGIN_VERSION = "0.11.4-tft.4";
 export declare const ACTION_IDS: {
     readonly approvalApprove: "approval_approve";
     readonly approvalReject: "approval_reject";
@@ -26,6 +26,8 @@ export declare const STATE_KEYS: {
     readonly issueThread: (issueId: string) => string;
     readonly approvalMessageIndex: "approval-message-index";
     readonly approvalMessage: (approvalId: string) => string;
+    readonly humanInteractionIndex: "human-interaction-index";
+    readonly humanInteractionMessage: (interactionId: string) => string;
 };
 export declare function stateScope(stateKey: string): ScopeKey;
 export declare const ASK_HUMAN_TOOL_DECLARATION: PluginToolDeclaration;

@@ -2,7 +2,7 @@ import type { PluginToolDeclaration, ScopeKey } from "@paperclipai/plugin-sdk";
 import type { SlackSocketConfig } from "./types.js";
 
 export const PLUGIN_ID = "cvh.slack-socket";
-export const PLUGIN_VERSION = "0.11.4-tft.3";
+export const PLUGIN_VERSION = "0.11.4-tft.4";
 
 export const ACTION_IDS = {
   approvalApprove: "approval_approve",
@@ -42,6 +42,8 @@ export const STATE_KEYS = {
   issueThread: (issueId: string) => `issue-thread:${issueId}`,
   approvalMessageIndex: "approval-message-index",
   approvalMessage: (approvalId: string) => `approval-message:${approvalId}`,
+  humanInteractionIndex: "human-interaction-index",
+  humanInteractionMessage: (interactionId: string) => `human-interaction:${interactionId}`,
 } as const;
 
 export function stateScope(stateKey: string): ScopeKey {
@@ -172,6 +174,7 @@ export const DEFAULT_CONFIG: SlackSocketConfig = {
   issuesChannelId: "",
   errorsChannelId: "",
   approvalsChannelId: "",
+  humanEscalationsChannelId: "",
   paperclipApiKeyRef: "",
   paperclipBaseUrl: "http://localhost:3010",
   sessionIdleHours: 24,

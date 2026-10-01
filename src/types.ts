@@ -31,6 +31,7 @@ export interface SlackSocketConfig {
   issuesChannelId: string;
   errorsChannelId: string;
   approvalsChannelId: string;
+  humanEscalationsChannelId: string;
   paperclipBaseUrl: string;
   sessionIdleHours: number;
   turnTimeoutMinutes: number;
@@ -111,6 +112,16 @@ export interface MessageLink {
   channel: string;
   ts: string;
   createdAt: string; // ISO 8601
+}
+
+export interface HumanInteractionMessageLink extends MessageLink {
+  interactionId: string;
+  issueId: string;
+  issueIdentifier: string;
+  questionId: string;
+  optionId: string;
+  title: string;
+  summary: string;
 }
 
 /**

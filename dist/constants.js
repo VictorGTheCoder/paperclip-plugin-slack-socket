@@ -1,5 +1,5 @@
 export const PLUGIN_ID = "cvh.slack-socket";
-export const PLUGIN_VERSION = "0.11.4-tft.3";
+export const PLUGIN_VERSION = "0.11.4-tft.4";
 export const ACTION_IDS = {
     approvalApprove: "approval_approve",
     approvalReject: "approval_reject",
@@ -31,6 +31,8 @@ export const STATE_KEYS = {
     issueThread: (issueId) => `issue-thread:${issueId}`,
     approvalMessageIndex: "approval-message-index",
     approvalMessage: (approvalId) => `approval-message:${approvalId}`,
+    humanInteractionIndex: "human-interaction-index",
+    humanInteractionMessage: (interactionId) => `human-interaction:${interactionId}`,
 };
 export function stateScope(stateKey) {
     return { scopeKind: "instance", namespace: STATE_NAMESPACE, stateKey };
@@ -148,6 +150,7 @@ export const DEFAULT_CONFIG = {
     issuesChannelId: "",
     errorsChannelId: "",
     approvalsChannelId: "",
+    humanEscalationsChannelId: "",
     paperclipApiKeyRef: "",
     paperclipBaseUrl: "http://localhost:3010",
     sessionIdleHours: 24,

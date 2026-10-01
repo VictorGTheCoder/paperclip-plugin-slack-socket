@@ -15,6 +15,7 @@ import { mergeConfig } from "./config.js";
 import { DEFAULT_CONFIG, JOB_KEYS, SLASH_COMMAND } from "./constants.js";
 import { createEventDeduper } from "./event-dedup.js";
 import { createGatewayProxy } from "./gateway-proxy.js";
+import { createHumanInteractions, type HumanInteractions } from "./human-interactions.js";
 import { registerNotifications } from "./notifications.js";
 import { createPostMessage, type PostMessage } from "./post-message.js";
 import { errString } from "./redact.js";
@@ -64,6 +65,7 @@ let currentGateway: SlackGateway | null = null;
 let lastCtx: PluginContext | null = null;
 let coreModules: CoreModules | null = null;
 let approvals: Approvals | null = null;
+let humanInteractions: HumanInteractions | null = null;
 
 // Slack Socket Mode redelivers events at-least-once, and a reconnect can
 // replay a backlog of stale events. Dedupe/stale-filter mention and
@@ -510,17 +512,18 @@ function ensureCoreModules(ctx: PluginContext): CoreModules {
 // runs from the first successful `applyConfig` bind rather than from
 // `setup()`. Guarded by `eventsSubscribed` so a later same-company
 // reconfiguration never double-subscribes.
-function ensureCompanyModules(ctx: PluginContext, companyId: string): Approvals {
+function ensureCompanyModules(ctx: PluginContext, companyId: string): { approvals: Approvals; humanInteractions: HumanInteractions } {
   const { gatewayProxy } = ensureCoreModules(ctx);
   const getConfig = async (): Promise<SlackSocketConfig> => getLiveConfig();
   if (!eventsSubscribed) {
     eventsSubscribed = true;
     registerNotifications({ ctx, gateway: gatewayProxy, getConfig, companyId });
     approvals = createApprovals({ ctx, gateway: gatewayProxy, getConfig, companyId });
+    humanInteractions = createHumanInteractions({ ctx, gateway: gatewayProxy, getConfig, companyId });
   }
   // Set on the same first-bind path that flips `eventsSubscribed`, so it is
   // always non-null here.
-  return approvals!;
+  return { approvals: approvals!, humanInteractions: humanInteractions! };
 }
 
 /**
@@ -654,7 +657,9 @@ export async function applyConfig(
   // modules (subscribing ctx.events on the first successful bind only),
   // tear down the previous gateway, and commit the new config.
   const { chat, askHuman, commands } = ensureCoreModules(ctx);
-  const approvals = ensureCompanyModules(ctx, cfg.companyId);
+  const companyModules = ensureCompanyModules(ctx, cfg.companyId);
+  const approvals = companyModules.approvals;
+  const humanInteractions = companyModules.humanInteractions;
 
   if (currentGateway) {
     await currentGateway.stop().catch(() => {});
@@ -682,6 +687,7 @@ export async function applyConfig(
       await ctx.metrics.write("slack.events.duplicate", 1, { kind: "message" }).catch(() => {});
       return;
     }
+    if (await humanInteractions.tryHandleReply(msg)) return;
     if (await askHuman.tryHandleAnswer(msg)) return;
     await chat.handleMessage(msg);
   });

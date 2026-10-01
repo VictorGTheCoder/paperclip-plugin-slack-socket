@@ -82,4 +82,5 @@ export async function runCleanup(ctx, gateway, cfg) {
     await updateIndex(ctx, STATE_KEYS.questionIndex, (current) => current.filter((k) => !removedQuestions.includes(k)));
     await pruneMessageLinks(ctx, STATE_KEYS.issueThreadIndex, MESSAGE_LINK_MAX_AGE_MS, now);
     await pruneMessageLinks(ctx, STATE_KEYS.approvalMessageIndex, MESSAGE_LINK_MAX_AGE_MS, now);
+    await pruneMessageLinks(ctx, STATE_KEYS.humanInteractionIndex, MESSAGE_LINK_MAX_AGE_MS, now);
 }

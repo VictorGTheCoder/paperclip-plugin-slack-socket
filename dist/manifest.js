@@ -5,7 +5,7 @@ const manifest = {
     apiVersion: 1,
     version: PLUGIN_VERSION,
     displayName: "Slack (Socket Mode)",
-    description: "Connect Slack over Socket Mode — no public URL required. Chat with a Paperclip agent in DMs and mentions, get configurable notifications, decide approvals with buttons, let agents ask humans questions, and create issues with /paperclip.",
+    description: "Connect Slack over Socket Mode — no public URL required. Chat with a Paperclip agent in DMs and mentions, get configurable notifications, decide approvals with buttons, relay TFT human review interactions, and create issues with /paperclip.",
     author: "cvh",
     categories: ["connector", "automation"],
     capabilities: [
@@ -19,6 +19,7 @@ const manifest = {
         "agent.tools.register",
         "http.outbound",
         "events.subscribe",
+        "events.emit",
         "plugin.state.read",
         "plugin.state.write",
         "secrets.read-ref",
@@ -108,6 +109,12 @@ const manifest = {
                 title: "Approvals Channel ID",
                 description: "Optional channel for approval notifications (falls back to default).",
                 default: DEFAULT_CONFIG.approvalsChannelId,
+            },
+            humanEscalationsChannelId: {
+                type: "string",
+                title: "Human Escalations Channel ID",
+                description: "Channel for TFT human review interactions (falls back to the default channel).",
+                default: DEFAULT_CONFIG.humanEscalationsChannelId,
             },
             paperclipBaseUrl: {
                 type: "string",

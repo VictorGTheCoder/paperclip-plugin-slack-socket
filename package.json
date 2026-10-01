@@ -1,8 +1,8 @@
 {
   "name": "paperclip-plugin-slack-socket",
-  "version": "0.11.4-tft.3",
+  "version": "0.11.4-tft.4",
   "type": "module",
-  "description": "Slack Socket Mode plugin for Paperclip: agent chat, notifications, approvals, ask-human tool. No public URL required.",
+  "description": "Slack Socket Mode plugin for Paperclip: agent chat, notifications, approvals, TFT human review interactions, and ask-human tool. No public URL required.",
   "main": "./dist/index.js",
   "scripts": {
     "build": "tsc",
