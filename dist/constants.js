@@ -1,5 +1,5 @@
 export const PLUGIN_ID = "cvh.slack-socket";
-export const PLUGIN_VERSION = "0.11.4-tft.4";
+export const PLUGIN_VERSION = "0.11.4-tft.5";
 export const ACTION_IDS = {
     approvalApprove: "approval_approve",
     approvalReject: "approval_reject",

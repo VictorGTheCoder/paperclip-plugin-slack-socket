@@ -15,6 +15,18 @@ function issueUrl(baseUrl, issueId) {
 function withdrawUrl(baseUrl, issueId, interactionId) {
     return `${baseUrl.replace(/\/+$/, "")}/api/issues/${encodeURIComponent(issueId)}/interactions/${encodeURIComponent(interactionId)}/withdraw`;
 }
+const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+async function paperclipFetch(ctx, baseUrl, url, init) {
+    const base = new URL(baseUrl);
+    const target = new URL(url);
+    if (target.origin !== base.origin) {
+        throw new Error("Paperclip API request escaped the configured origin");
+    }
+    if (LOOPBACK_HOSTNAMES.has(base.hostname.toLowerCase())) {
+        return fetch(target, init);
+    }
+    return ctx.http.fetch(target.toString(), init);
+}
 function createdText(event, baseUrl) {
     const issue = event.issue ?? {};
     const interaction = event.interaction ?? {};
@@ -141,13 +153,13 @@ export function createHumanInteractions({ ctx, gateway, getConfig, companyId }) 
         let withdrawalStatus = "withdrawn";
         let remoteStatus = "expired";
         try {
-            const response = await ctx.http.fetch(withdrawUrl(cfg.paperclipBaseUrl, issueId, id), {
+            const response = await paperclipFetch(ctx, cfg.paperclipBaseUrl, withdrawUrl(cfg.paperclipBaseUrl, issueId, id), {
                 method: "POST", headers, body: JSON.stringify({ reason: "The issue no longer has a pending human review stage." }),
             });
             if (response.status < 200 || response.status >= 300) {
                 if (response.status !== 404 && response.status !== 409)
                     throw new Error(`Paperclip interaction withdrawal returned HTTP ${response.status}`);
-                const listResponse = await ctx.http.fetch(`${cfg.paperclipBaseUrl.replace(/\/+$/, "")}/api/issues/${encodeURIComponent(issueId)}/interactions`, { headers });
+                const listResponse = await paperclipFetch(ctx, cfg.paperclipBaseUrl, `${cfg.paperclipBaseUrl.replace(/\/+$/, "")}/api/issues/${encodeURIComponent(issueId)}/interactions`, { headers });
                 if (listResponse.status < 200 || listResponse.status >= 300)
                     throw new Error(`Paperclip interaction read returned HTTP ${listResponse.status}`);
                 const listPayload = await listResponse.json();
@@ -228,7 +240,7 @@ export function createHumanInteractions({ ctx, gateway, getConfig, companyId }) 
                     if (!savedLink.answerRecorded) {
                         let alreadyAnswered = false;
                         if (link.answerText) {
-                            const listResponse = await ctx.http.fetch(`${cfg.paperclipBaseUrl.replace(/\/+$/, "")}/api/issues/${encodeURIComponent(link.issueId)}/interactions`, { headers });
+                            const listResponse = await paperclipFetch(ctx, cfg.paperclipBaseUrl, `${cfg.paperclipBaseUrl.replace(/\/+$/, "")}/api/issues/${encodeURIComponent(link.issueId)}/interactions`, { headers });
                             if (listResponse.status < 200 || listResponse.status >= 300)
                                 throw new Error(`Paperclip interaction read returned HTTP ${listResponse.status}`);
                             const listPayload = await listResponse.json();
@@ -236,7 +248,7 @@ export function createHumanInteractions({ ctx, gateway, getConfig, companyId }) 
                             alreadyAnswered = interactions.some((entry) => entry.id === link.interactionId && entry.status !== "pending");
                         }
                         if (!alreadyAnswered) {
-                            const response = await ctx.http.fetch(interactionUrl(cfg.paperclipBaseUrl, link.issueId, link.interactionId), {
+                            const response = await paperclipFetch(ctx, cfg.paperclipBaseUrl, interactionUrl(cfg.paperclipBaseUrl, link.issueId, link.interactionId), {
                                 method: "POST", headers,
                                 body: JSON.stringify({ answers: [{ questionId: link.questionId, optionIds: [link.optionId], otherText: savedAnswer }] }),
                             });
@@ -249,13 +261,13 @@ export function createHumanInteractions({ ctx, gateway, getConfig, companyId }) 
                     }
                     let continued = savedLink.nativeReviewContinued === true;
                     if (!continued) {
-                        const issueResponse = await ctx.http.fetch(issueUrl(cfg.paperclipBaseUrl, link.issueId), { headers });
+                        const issueResponse = await paperclipFetch(ctx, cfg.paperclipBaseUrl, issueUrl(cfg.paperclipBaseUrl, link.issueId), { headers });
                         if (issueResponse.status < 200 || issueResponse.status >= 300)
                             throw new Error(`Paperclip issue read returned HTTP ${issueResponse.status}`);
                         const issue = await issueResponse.json();
                         const stage = issue.executionState;
                         if (issue.status === "in_review" && stage?.status === "pending" && stage.currentStageType === "review" && stage.currentParticipant?.type === "user") {
-                            const transition = await ctx.http.fetch(issueUrl(cfg.paperclipBaseUrl, link.issueId), {
+                            const transition = await paperclipFetch(ctx, cfg.paperclipBaseUrl, issueUrl(cfg.paperclipBaseUrl, link.issueId), {
                                 method: "PATCH", headers,
                                 body: JSON.stringify({ status: "in_progress", comment: `Human review instruction: ${savedAnswer}` }),
                             });

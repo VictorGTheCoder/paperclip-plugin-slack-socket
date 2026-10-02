@@ -263,4 +263,56 @@ describe("TFT Paperclip human interactions", () => {
     expect(ctx.http.fetch).toHaveBeenNthCalledWith(4, "https://pc.example/api/issues/issue-1", expect.objectContaining({ method: "PATCH" }));
     expect(stateStore.has(STATE_KEYS.humanInteractionMessage("interaction-1"))).toBe(false);
   });
+
+  it("uses direct fetch for a loopback Paperclip API instead of the outbound SSRF broker", async () => {
+    const directFetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/respond")) {
+        return { status: 200, json: async () => ({}) } as Response;
+      }
+      if (init?.method === "PATCH") {
+        return { status: 200, json: async () => ({}) } as Response;
+      }
+      return {
+        status: 200,
+        json: async () => ({
+          status: "in_review",
+          executionState: {
+            status: "pending",
+            currentStageType: "review",
+            currentParticipant: { type: "user" },
+          },
+        }),
+      } as Response;
+    });
+    vi.stubGlobal("fetch", directFetch);
+    try {
+      const { ctx, emitEvent, gateway, humanInteractions, stateStore } = setup({
+        paperclipBaseUrl: "http://127.0.0.1:3100",
+        paperclipApiKeyRef: "board-key",
+        humanEscalationAllowedSlackUserIds: ["U-VICTOR"],
+      });
+      await emitEvent(eventName, { payload: created });
+
+      const handled = await humanInteractions.tryHandleReply({
+        channel: gateway.posts[0]!.channel,
+        channelType: "channel",
+        user: "U-VICTOR",
+        text: "Continue the final Senior repair pass.",
+        ts: "1700000001.000001",
+        threadTs: gateway.posts[0]!.ts,
+      });
+
+      expect(handled).toBe(true);
+      expect(ctx.http.fetch).not.toHaveBeenCalled();
+      expect(directFetch).toHaveBeenCalledTimes(3);
+      expect(String(directFetch.mock.calls[0]![0])).toContain(
+        "http://127.0.0.1:3100/api/issues/issue-1/interactions/interaction-1/respond",
+      );
+      expect(stateStore.has(STATE_KEYS.humanInteractionMessage("interaction-1"))).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
 });
